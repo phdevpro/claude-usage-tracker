@@ -55,6 +55,10 @@
     <label><input type="checkbox" id="group" checked> Group by title</label>
     <button id="reload">Refresh</button>
     <button id="csv">Export CSV</button>
+    <button id="tagsimport" title="Merge a tags.json into the server's tags">Import tags</button>
+    <input type="file" id="tagsfile" accept=".json,application/json" hidden>
+    <button id="tagsexport">Export tags</button>
+    <span id="msg" class="det"></span>
   </div>
 
   <div class="wrap"><table>
@@ -200,6 +204,23 @@ document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
   sortDir = sortK === th.dataset.k ? -sortDir : -1; sortK = th.dataset.k; render();
 });
 $("reload").onclick = load;
+$("tagsimport").onclick = () => $("tagsfile").click();
+$("tagsexport").onclick = async () => {
+  const blob = await (await fetch(location.origin + "/api/tags")).blob();
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "tags.json"; a.click();
+};
+$("tagsfile").onchange = async e => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  let body;
+  try { body = JSON.parse(await file.text()); } catch { return void ($("msg").textContent = `${file.name} is not valid JSON`); }
+  const r = await fetch(location.origin + "/api/tags", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) return void ($("msg").textContent = `Import failed: ${(await r.json().catch(() => ({}))).error || r.status}`);
+  const n = (await r.json()).imported;
+  $("msg").textContent = `Imported ${Object.entries(n).filter(([, v]) => v).map(([k, v]) => `${v} ${k.replace("_", " ")}`).join(", ") || "nothing"} (merged with existing tags)`;
+  load();
+};
 $("csv").onclick = () => {
   const cols = ["id","machine","name","project","category","first","last","turns","input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens","total"];
   const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;

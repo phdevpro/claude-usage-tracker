@@ -138,6 +138,32 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.call("/api/ingest", {"machine": "m"}, self.AGENT)[0], 400)
         self.assertEqual(self.call("/api/tag", {"kind": "evil", "key": "x", "value": "work"}, self.DASH)[0], 400)
 
+    def test_tags_import_export(self):
+        self.ingest("m", [self.sess("s1", "Hourly job")])
+        status, res = self.call("/api/tags", {
+            "sessions": {"s1": "private", "bad": "maybe"},   # invalid value is dropped
+            "titles": {"Hourly job": "work"},
+            "title_rules": {"ACME": "work"},
+            "unknown_section": {"x": "work"},                # ignored
+        }, self.DASH)
+        self.assertEqual(status, 200)
+        self.assertEqual(res["imported"]["sessions"], 1)
+        tags = self.call("/api/tags", auth=self.DASH)[1]
+        # merge keeps what was there (the folder rule from setUp)
+        self.assertEqual(tags["path_rules"], {"C:\\Users\\me\\Documents\\Dev": "work"})
+        self.assertEqual(tags["sessions"], {"s1": "private"})
+        self.assertEqual(tags["title_rules"]["ACME"], "work")
+        self.assertNotIn("unknown_section", tags)
+        self.assertEqual(self.sessions()["s1"]["category"], "private")
+
+        # replace drops everything not in the upload
+        self.call("/api/tags?mode=replace", {"titles": {"Hourly job": "work"}}, self.DASH)
+        tags = self.call("/api/tags", auth=self.DASH)[1]
+        self.assertEqual((tags["sessions"], tags["path_rules"]), ({}, {}))
+
+        self.assertEqual(self.call("/api/tags", {"sessions": ["not", "a", "dict"]}, self.DASH)[0], 400)
+        self.assertEqual(self.call("/api/tags", {"sessions": {}})[0], 401)
+
     def test_tag_precedence(self):
         self.ingest("m", [
             self.sess("plain", "something"),

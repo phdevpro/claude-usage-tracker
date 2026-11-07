@@ -39,11 +39,9 @@ docker compose up -d --build
 
 Open `http://<docker-host>:8080` and log in with `DASHBOARD_USER` / `DASHBOARD_PASSWORD`.
 
-To bring over the tags you already set with the local version:
-
-```bash
-docker cp tags.json claude-usage:/data/tags.json
-```
+To bring over the tags you already set with the local version, click
+**Import tags** in the dashboard and pick your `tags.json`. It is merged
+into the server's tags; **Export tags** downloads the current file.
 
 The server sends the agent token and dashboard password in plain HTTP. On
 anything other than a trusted LAN, put it behind HTTPS (a reverse proxy
@@ -83,8 +81,8 @@ From strongest to weakest:
 3. Rules in `tags.json`: `title_rules` (keyword in title) and `path_rules` (project folder)
 4. Project default
 
-Edit rules in `/data/tags.json` on the server (`docker exec -it claude-usage sh`
-or `docker cp`), e.g.:
+To change rules, click **Export tags**, edit the file, and **Import tags** it
+back (it is merged, so existing tags are kept), e.g.:
 
 ```json
 "title_rules": { "IG3": "work" },

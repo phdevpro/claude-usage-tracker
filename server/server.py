@@ -91,6 +91,28 @@ def set_tag(kind, key, value):
         save_json(TAGS_FILE, tags)
 
 
+TAG_SECTIONS = ("sessions", "projects", "titles", "title_rules", "path_rules")
+
+
+def import_tags(data, mode):
+    """Merge (default) or replace tags.json with an uploaded one. Only known
+    sections and "work"/"private" values are accepted."""
+    if not isinstance(data, dict) or mode not in ("merge", "replace"):
+        raise ValueError
+    clean = {}
+    for section in TAG_SECTIONS:
+        items = data.get(section, {})
+        if not isinstance(items, dict):
+            raise ValueError(section)
+        clean[section] = {str(k): v for k, v in items.items() if v in ("work", "private")}
+    with _lock:
+        tags = load_tags() if mode == "merge" else {}
+        for section in TAG_SECTIONS:
+            tags.setdefault(section, {}).update(clean[section])
+        save_json(TAGS_FILE, tags)
+    return {s: len(clean[s]) for s in TAG_SECTIONS}
+
+
 def ingest(payload):
     machine = str(payload["machine"])[:100]
     sessions = payload["sessions"]
@@ -199,6 +221,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(all_sessions()))
         elif self.path == "/api/machines":
             self._send(200, json.dumps(machines()))
+        elif self.path == "/api/tags":
+            self._send(200, json.dumps(load_tags(), indent=2, ensure_ascii=False),
+                       headers=[("Content-Disposition", 'attachment; filename="tags.json"')])
         else:
             self._send(404, "{}")
 
@@ -222,6 +247,14 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, KeyError, TypeError):
                 return self._send(400, '{"error":"bad request"}')
             return self._send(200, '{"ok":true}')
+        if self.path in ("/api/tags", "/api/tags?mode=replace"):
+            if not self._dashboard_ok():
+                return
+            try:
+                counts = import_tags(self._body(), "replace" if self.path.endswith("replace") else "merge")
+            except (ValueError, TypeError):
+                return self._send(400, '{"error":"not a valid tags.json"}')
+            return self._send(200, json.dumps({"ok": True, "imported": counts}))
         self._send(404, "{}")
 
 
