@@ -65,6 +65,7 @@
     <button id="tagsimport" title="Merge a tags.json into the server's tags">Import tags</button>
     <input type="file" id="tagsfile" accept=".json,application/json" hidden>
     <button id="tagsexport">Export tags</button>
+    <button id="report" title="Printable A6 report: tokens and cost per tag for a month">Monthly report (A6)</button>
     <span id="msg" class="det"></span>
   </div>
 
@@ -302,6 +303,11 @@ document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
 });
 $("reload").onclick = load;
 $("savesettings").onclick = saveSettings;
+// opens the month picked in the filter, or the most recent month with data
+$("report").onclick = () => {
+  const m = $("fmonth").value || data.map(s => s.month).filter(Boolean).sort().pop() || "";
+  window.open("/report" + (m ? "?month=" + m : ""), "_blank", "noopener");
+};
 $("addplan").onclick = () => {
   $("plans").insertAdjacentHTML("beforeend", `<div class="row plan"><label>From</label><input type="month" class="pfrom" value="${new Date().toISOString().slice(0, 7)}">
     <label>price / month</label><input type="number" class="pcost" min="0" step="0.01"><button type="button" class="pdel" title="Remove">✕</button></div>`);
