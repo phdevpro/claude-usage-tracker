@@ -170,6 +170,10 @@ def send(server, token, machine, sessions):
 
 
 def run_once(cfg, dry_run):
+    if not PROJECTS_DIR.is_dir():
+        # not an error: Claude Code just hasn't been used on this machine yet
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] nothing to send yet: no Claude Code transcripts at {PROJECTS_DIR}")
+        return True
     t0 = time.time()
     sessions = scan_all()
     took = time.time() - t0
@@ -199,6 +203,8 @@ def main():
     ap.add_argument("--log", help="append output to this file (for scheduled runs with pythonw, which has no console)")
     a = ap.parse_args()
     if a.log:
+        # on a machine where Claude Code never ran, ~/.claude doesn't exist yet
+        Path(a.log).parent.mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = open(a.log, "a", encoding="utf-8", buffering=1)
 
     file_cfg = load_json(CONFIG_FILE, {})
@@ -207,8 +213,6 @@ def main():
         "token": a.token or os.environ.get("CLAUDE_USAGE_TOKEN") or file_cfg.get("token"),
         "machine": a.machine or os.environ.get("CLAUDE_USAGE_MACHINE") or file_cfg.get("machine") or socket.gethostname(),
     }
-    if not PROJECTS_DIR.is_dir():
-        sys.exit(f"No Claude Code transcripts at {PROJECTS_DIR}")
     if not a.dry_run and not (cfg["server"] and cfg["token"]):
         sys.exit("Set the server URL and token (--server/--token, env vars, or agent.json)")
 

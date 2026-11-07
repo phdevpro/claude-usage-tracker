@@ -64,6 +64,22 @@ class AgentScanTest(unittest.TestCase):
         self.assertEqual(s["models"], {"claude-x": 100, "claude-y": 3})
         self.assertEqual((s["first"], s["last"]), ("2026-11-01T10:00:00Z", "2026-11-01T10:01:00Z"))
 
+    def test_fresh_machine_without_claude_dir(self):
+        # Claude Code never ran here: no ~/.claude at all, and the log lives inside it
+        home = Path(tempfile.mkdtemp())
+        log = home / ".claude" / "usage-agent.log"
+        agent.PROJECTS_DIR = home / ".claude" / "projects"
+        argv, out, err = sys.argv, sys.stdout, sys.stderr
+        sys.argv = ["agent", "--server", "http://127.0.0.1:9", "--token", "t", "--log", str(log)]
+        try:
+            with self.assertRaises(SystemExit) as ex:
+                agent.main()
+        finally:
+            sys.stdout.close()
+            sys.argv, sys.stdout, sys.stderr = argv, out, err
+        self.assertEqual(ex.exception.code, 0)
+        self.assertIn("nothing to send yet", log.read_text(encoding="utf-8"))
+
     def test_first_prompt_skips_injected_text(self):
         (self.dir / "C--Dev-IG3-app" / "s1.jsonl").write_text(
             line(type="user", message={"content": [{"type": "text", "text": "<reminder/>"},
