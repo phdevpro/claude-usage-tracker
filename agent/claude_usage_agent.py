@@ -162,7 +162,9 @@ def send(server, token, machine, sessions):
     body = json.dumps({"machine": machine, "user": getpass.getuser(), "agent_version": AGENT_VERSION,
                        "sessions": sessions}).encode("utf-8")
     req = urllib.request.Request(server.rstrip("/") + "/api/ingest", data=body, method="POST", headers={
-        "Content-Type": "application/json", "Authorization": "Bearer " + token})
+        "Content-Type": "application/json", "Authorization": "Bearer " + token,
+        # Cloudflare (error 1010) blocks the default Python-urllib user agent
+        "User-Agent": f"claude-usage-agent/{AGENT_VERSION}"})
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read())
 
@@ -178,10 +180,10 @@ def run_once(cfg, dry_run):
     try:
         res = send(cfg["server"], cfg["token"], cfg["machine"], sessions)
     except urllib.error.HTTPError as e:
-        print(f"Server rejected the upload: HTTP {e.code} {e.read()[:200]!r}", file=sys.stderr)
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Server rejected the upload: HTTP {e.code} {e.read()[:200]!r}", file=sys.stderr)
         return False
     except (urllib.error.URLError, OSError) as e:
-        print(f"Could not reach {cfg['server']}: {e}", file=sys.stderr)
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Could not reach {cfg['server']}: {e}", file=sys.stderr)
         return False
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] sent {res.get('received')} sessions from {cfg['machine']} (scan {took:.1f}s)")
     return True
@@ -194,7 +196,10 @@ def main():
     ap.add_argument("--machine", help="name shown in the dashboard (default: computer name)")
     ap.add_argument("--interval", type=float, help="keep running and send every N minutes")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--log", help="append output to this file (for scheduled runs with pythonw, which has no console)")
     a = ap.parse_args()
+    if a.log:
+        sys.stdout = sys.stderr = open(a.log, "a", encoding="utf-8", buffering=1)
 
     file_cfg = load_json(CONFIG_FILE, {})
     cfg = {

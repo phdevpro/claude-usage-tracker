@@ -57,10 +57,11 @@ python claude_usage_agent.py --dry-run   # scan only, check the numbers
 python claude_usage_agent.py             # send once
 ```
 
-Send automatically every 30 minutes on Windows (Task Scheduler):
+Send automatically every 30 minutes on Windows (Task Scheduler, no console
+window, log in `~/.claude/usage-agent.log`), from the agent folder:
 
 ```powershell
-schtasks /Create /SC MINUTE /MO 30 /TN "Claude usage agent" /TR "pythonw.exe \"C:\path\to\agent\claude_usage_agent.py\""
+powershell -ExecutionPolicy Bypass -File .\install-windows-task.ps1
 ```
 
 macOS / Linux (cron):
