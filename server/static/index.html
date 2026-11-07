@@ -37,6 +37,12 @@
   .mixed { background:linear-gradient(90deg, var(--work) 50%, var(--private) 50%); }
   .inh { color:var(--muted); font-size:11px; }
   h2 { font-size:15px; margin:24px 0 8px; }
+  .settings { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; display:grid; gap:12px; }
+  .settings .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .settings label { color:var(--muted); font-size:12px; }
+  .settings input[type=number] { width:110px; }
+  .hint { color:var(--muted); font-size:12px; max-width:760px; }
+  tr.total td { font-weight:600; }
 </style>
 </head>
 <body>
@@ -67,9 +73,19 @@
       <th class="num" data-k="turns">Calls</th><th class="num" data-k="input_tokens">Input</th>
       <th class="num" data-k="output_tokens">Output</th><th class="num" data-k="cache_creation_input_tokens">Cache write</th>
       <th class="num" data-k="cache_read_input_tokens">Cache read</th><th class="num" data-k="total">Total</th>
+      <th class="num" data-k="cost">Cost</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table></div>
+
+  <h2>Monthly cost — subscription split by tag</h2>
+  <div class="wrap"><table>
+    <thead><tr><th>Month</th><th class="num">Subscription</th><th class="num">Work</th><th class="num">Private</th>
+      <th class="num">Untagged</th><th class="num">Work share</th><th class="num">Sessions</th></tr></thead>
+    <tbody id="monthrows"></tbody>
+  </table></div>
+  <p class="hint">Each month's subscription price is split across that month's sessions (all machines) in proportion to
+    their weighted tokens; a session counts in the month of its last activity. Filters above don't change the split.</p>
 
   <h2>Projects — set a default for every session in a project</h2>
   <div class="wrap"><table>
@@ -82,14 +98,35 @@
     <thead><tr><th>Machine</th><th>User</th><th>Last report (UTC)</th><th class="num">Sessions</th><th>Agent</th></tr></thead>
     <tbody id="machrows"></tbody>
   </table></div>
+
+  <h2>Settings — subscription cost</h2>
+  <div class="settings">
+    <div class="row"><label for="currency">Currency</label><input id="currency" size="5" maxlength="8"></div>
+    <div>
+      <div class="hint">Monthly price of your Claude subscription. Each line applies from its month until the next line
+        (add a line when the plan or price changes).</div>
+      <div id="plans"></div>
+      <button id="addplan" type="button">+ Add price change</button>
+    </div>
+    <div>
+      <div class="hint">Token weights used to split the cost (relative to an input token; defaults follow Anthropic's
+        price ratios). Raw token counts would over-charge sessions with lots of cheap cache reads.</div>
+      <div class="row" id="weights"></div>
+    </div>
+    <div class="row"><button id="savesettings" type="button">Save settings</button><span id="setmsg" class="det"></span></div>
+  </div>
 </main>
 <script>
-let data = [], sortK = "last", sortDir = -1;
+let data = [], settings = { currency: "EUR", plans: [], weights: {} }, sortK = "last", sortDir = -1;
+const WEIGHT_LABELS = { input_tokens: "Input", output_tokens: "Output", cache_creation_input_tokens: "Cache write", cache_read_input_tokens: "Cache read" };
+const money = v => { try { return new Intl.NumberFormat(undefined, { style: "currency", currency: settings.currency }).format(v); }
+                     catch { return `${v.toFixed(2)} ${settings.currency}`; } };
+const hasCost = () => settings.plans.some(p => p.monthly_cost > 0);
 const fmt = n => n >= 1e9 ? (n/1e9).toFixed(2)+"B" : n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const month = s => (s.last || "").slice(0, 7);
 const $ = id => document.getElementById(id);
-const TOK = ["turns", "input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "total"];
+const TOK = ["turns", "input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "total", "cost"];
 const recat = s => s.category = s.session_tag || s.title_tag || s.rule_tag || s.project_tag || "untagged";
 const tagSelect = (attr, key, current, auto) => `<select ${attr}="${esc(key)}">
       <option value="" ${!current ? "selected" : ""}>${auto}</option>
@@ -104,7 +141,8 @@ const autoLabel = s => s.title_tag ? "title: " + s.title_tag : s.rule_tag ? `aut
 async function load() {
   $("sub").textContent = "Loading…";
   let machines;
-  [data, machines] = await Promise.all(["/api/sessions", "/api/machines"].map(u => fetch(location.origin + u).then(r => r.json())));
+  [data, machines, settings] = await Promise.all(["/api/sessions", "/api/machines", "/api/settings"].map(u => fetch(location.origin + u).then(r => r.json())));
+  renderSettings();
   const options = (id, label, values) => {
     const cur = $(id).value;
     $(id).innerHTML = `<option value="">${label}</option>` + values.map(v => `<option ${v===cur?"selected":""}>${esc(v)}</option>`).join("");
@@ -124,19 +162,23 @@ function filtered() {
 
 function render() {
   const rows = filtered();
-  const sum = cat => rows.filter(s => !cat || s.category === cat).reduce((a, s) => a + s.total, 0);
-  const cnt = cat => rows.filter(s => s.category === cat).length;
-  const all = sum(), w = sum("work"), p = sum("private"), u = sum("untagged");
+  const costed = hasCost();
+  // shares (cards %, bar) follow cost once a price is set, raw tokens before that
+  const sum = (cat, k) => rows.filter(s => !cat || s.category === cat).reduce((a, s) => a + s[k], 0);
+  const cnt = cat => rows.filter(s => !cat || s.category === cat).length;
+  const key = costed ? "cost" : "total";
+  const all = sum("", key);
   const pct = x => all ? Math.round(x / all * 100) + "%" : "0%";
-  const out = rows.reduce((a, s) => a + s.output_tokens, 0);
-  $("sub").textContent = `${rows.length} sessions shown · ${data.length} total · tokens = input + output + cache write + cache read`;
-  $("cards").innerHTML = [
-    ["All", all, `${rows.length} sessions · ${fmt(out)} output`, ""],
-    ["Work", w, `${cnt("work")} sessions · ${pct(w)}`, "work"],
-    ["Private", p, `${cnt("private")} sessions · ${pct(p)}`, "private"],
-    ["Untagged", u, `${cnt("untagged")} sessions · ${pct(u)}`, "untagged"],
-  ].map(([l, v, d, c]) => `<div class="card"><div class="lbl">${c ? `<span class="dot ${c}"></span>` : ""}${l}</div><div class="val">${fmt(v)}</div><div class="det">${d}</div></div>`).join("");
-  $("bar").innerHTML = all ? [["work", w], ["private", p], ["untagged", u]].map(([c, v]) => `<div class="${c}" style="width:${v/all*100}%"></div>`).join("") : "";
+  $("sub").textContent = `${rows.length} sessions shown · ${data.length} total · tokens = input + output + cache write + cache read` +
+    (costed ? "" : " · set your subscription price in Settings (bottom) to see costs");
+  $("cards").innerHTML = [["All", ""], ["Work", "work"], ["Private", "private"], ["Untagged", "untagged"]].map(([l, c]) => {
+    const v = sum(c, key), tok = sum(c, "total");
+    const det = costed ? `${fmt(tok)} tokens · ${cnt(c)} sessions${c ? " · " + pct(v) : ""}` : `${cnt(c)} sessions${c ? " · " + pct(v) : ""}`;
+    return `<div class="card"><div class="lbl">${c ? `<span class="dot ${c}"></span>` : ""}${l}</div>
+      <div class="val">${costed ? money(v) : fmt(v)}</div><div class="det">${det}</div></div>`;
+  }).join("");
+  $("bar").innerHTML = all ? ["work", "private", "untagged"].map(c => `<div class="${c}" style="width:${sum(c, key)/all*100}%"></div>`).join("") : "";
+  renderMonths();
 
   const grouped = $("group").checked;
   let list = rows;
@@ -165,7 +207,7 @@ function render() {
       : tagSelect("data-sid", s.id, s.session_tag, autoLabel(s))}</td>
     <td class="num">${s.turns}</td><td class="num">${fmt(s.input_tokens)}</td><td class="num">${fmt(s.output_tokens)}</td>
     <td class="num">${fmt(s.cache_creation_input_tokens)}</td><td class="num">${fmt(s.cache_read_input_tokens)}</td>
-    <td class="num"><b>${fmt(s.total)}</b></td></tr>`).join("");
+    <td class="num"><b>${fmt(s.total)}</b></td><td class="num">${costed ? money(s.cost) : "–"}</td></tr>`).join("");
 
   const projs = {};
   for (const s of data) {
@@ -177,6 +219,59 @@ function render() {
     <td><select data-proj="${esc(name)}"><option value="">none</option>
       <option value="work" ${p.tag === "work" ? "selected" : ""}>work</option>
       <option value="private" ${p.tag === "private" ? "selected" : ""}>private</option></select></td></tr>`).join("");
+}
+
+const planFor = m => settings.plans.reduce((c, p) => p.from <= m ? p.monthly_cost : c, 0);
+
+function renderMonths() {
+  // always over all sessions: the split doesn't depend on the table filters
+  const months = {};
+  for (const s of data) {
+    if (!s.month) continue;
+    const r = months[s.month] ??= { work: 0, private: 0, untagged: 0, n: 0 };
+    r[s.category] += s.cost; r.n++;
+  }
+  const cur = new Date().toISOString().slice(0, 7);
+  if (settings.plans.length) months[cur] ??= { work: 0, private: 0, untagged: 0, n: 0 };
+  const list = Object.entries(months).sort((a, b) => b[0].localeCompare(a[0]));
+  const tot = { plan: 0, work: 0, private: 0, untagged: 0, n: 0 };
+  const row = (label, plan, r, cls = "") => {
+    const used = r.work + r.private + r.untagged;
+    return `<tr class="${cls}"><td>${label}</td><td class="num">${money(plan)}</td>
+      <td class="num">${money(r.work)}</td><td class="num">${money(r.private)}</td><td class="num">${money(r.untagged)}</td>
+      <td class="num">${used ? Math.round(r.work / used * 100) + "%" : "–"}</td><td class="num">${r.n}</td></tr>`;
+  };
+  $("monthrows").innerHTML = !hasCost()
+    ? `<tr><td colspan="7" class="det">Set your subscription price in Settings below to see monthly costs.</td></tr>`
+    : list.map(([m, r]) => {
+        const plan = planFor(m);
+        tot.plan += plan; ["work", "private", "untagged", "n"].forEach(k => tot[k] += r[k]);
+        return row(m, plan, r);
+      }).join("") + row("Total", tot.plan, tot, "total");
+}
+
+function renderSettings() {
+  $("currency").value = settings.currency;
+  $("plans").innerHTML = (settings.plans.length ? settings.plans : [{ from: new Date().toISOString().slice(0, 7), monthly_cost: "" }])
+    .map(p => `<div class="row plan"><label>From</label><input type="month" class="pfrom" value="${esc(p.from)}" required>
+      <label>price / month</label><input type="number" class="pcost" min="0" step="0.01" value="${esc(p.monthly_cost)}">
+      <button type="button" class="pdel" title="Remove">✕</button></div>`).join("");
+  $("weights").innerHTML = Object.entries(WEIGHT_LABELS).map(([k, l]) =>
+    `<label for="w_${k}">${l}</label><input type="number" id="w_${k}" min="0" step="0.01" value="${settings.weights[k]}">`).join("");
+}
+
+async function saveSettings() {
+  const body = {
+    currency: $("currency").value.trim().toUpperCase() || "EUR",
+    plans: [...document.querySelectorAll("#plans .plan")]
+      .map(r => ({ from: r.querySelector(".pfrom").value, monthly_cost: r.querySelector(".pcost").value }))
+      .filter(p => p.from && p.monthly_cost !== "")
+      .map(p => ({ from: p.from, monthly_cost: Number(p.monthly_cost) })),
+    weights: Object.fromEntries(Object.keys(WEIGHT_LABELS).map(k => [k, Number($("w_" + k).value)])),
+  };
+  const r = await fetch(location.origin + "/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  $("setmsg").textContent = r.ok ? "Saved" : `Not saved: ${(await r.json().catch(() => ({}))).error || r.status}`;
+  if (r.ok) load();
 }
 
 async function tag(kind, key, value) {
@@ -204,6 +299,12 @@ document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
   sortDir = sortK === th.dataset.k ? -sortDir : -1; sortK = th.dataset.k; render();
 });
 $("reload").onclick = load;
+$("savesettings").onclick = saveSettings;
+$("addplan").onclick = () => {
+  $("plans").insertAdjacentHTML("beforeend", `<div class="row plan"><label>From</label><input type="month" class="pfrom" value="${new Date().toISOString().slice(0, 7)}">
+    <label>price / month</label><input type="number" class="pcost" min="0" step="0.01"><button type="button" class="pdel" title="Remove">✕</button></div>`);
+};
+$("plans").addEventListener("click", e => { if (e.target.classList.contains("pdel")) e.target.closest(".plan").remove(); });
 $("tagsimport").onclick = () => $("tagsfile").click();
 $("tagsexport").onclick = async () => {
   const blob = await (await fetch(location.origin + "/api/tags")).blob();
@@ -222,7 +323,7 @@ $("tagsfile").onchange = async e => {
   load();
 };
 $("csv").onclick = () => {
-  const cols = ["id","machine","name","project","category","first","last","turns","input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens","total"];
+  const cols = ["id","machine","name","project","category","first","last","turns","input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens","total","cost"];
   const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const blob = new Blob([[cols.join(","), ...filtered().map(s => cols.map(c => q(s[c])).join(","))].join("\n")], { type: "text/csv" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "claude-token-usage.csv"; a.click();

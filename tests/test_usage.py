@@ -87,8 +87,10 @@ class ServerTest(unittest.TestCase):
 
     def setUp(self):
         server.save_json(server.TAGS_FILE, {"path_rules": {"C:\\Users\\me\\Documents\\Dev": "work"}})
+        server.SETTINGS_FILE.unlink(missing_ok=True)
         with server.db() as con:
             con.execute("DELETE FROM sessions")
+            con.execute("DELETE FROM machines")
 
     def call(self, path, body=None, auth=None):
         headers = {"Content-Type": "application/json"}
@@ -111,9 +113,47 @@ class ServerTest(unittest.TestCase):
         return {s["id"]: s for s in self.call("/api/sessions", auth=self.DASH)[1]}
 
     @staticmethod
-    def sess(sid, name, project="C:\\other", **tok):
-        return {"id": sid, "name": name, "project": project, "last": "2026-11-01T10:00:00Z", "turns": 1,
-                **usage(tok.get("i", 1), tok.get("o", 1))}
+    def sess(sid, name, project="C:\\other", last="2026-11-01T10:00:00Z", **tok):
+        return {"id": sid, "name": name, "project": project, "last": last, "turns": 1,
+                **usage(tok.get("i", 1), tok.get("o", 1), tok.get("cw", 0), tok.get("cr", 0))}
+
+    def test_settings_defaults_and_validation(self):
+        st = self.call("/api/settings", auth=self.DASH)[1]
+        self.assertEqual((st["currency"], st["plans"]), ("EUR", []))
+        self.assertEqual(st["weights"]["cache_read_input_tokens"], 0.1)
+        for bad in ({"plans": [{"from": "2026-13", "monthly_cost": 10}]},
+                    {"plans": [{"from": "2026-01", "monthly_cost": -1}]},
+                    {"plans": [{"from": "2026-01", "monthly_cost": 1}, {"from": "2026-01", "monthly_cost": 2}]},
+                    {"plans": [{"from": "2026-01"}]},
+                    {"weights": {"output_tokens": -5}}):
+            self.assertEqual(self.call("/api/settings", bad, self.DASH)[0], 400, bad)
+        self.assertEqual(self.call("/api/settings", {"plans": []})[0], 401)
+        # unknown weight keys are dropped, plans come back sorted
+        status, st = self.call("/api/settings", {"currency": "usd", "weights": {"bogus": 3},
+            "plans": [{"from": "2026-09", "monthly_cost": 180}, {"from": "2026-01", "monthly_cost": 90}]}, self.DASH)
+        self.assertEqual(status, 200)
+        self.assertEqual([p["from"] for p in st["plans"]], ["2026-01", "2026-09"])
+        self.assertNotIn("bogus", st["weights"])
+
+    def test_cost_split_per_month(self):
+        self.call("/api/settings", {"plans": [{"from": "2026-10", "monthly_cost": 100},
+                                              {"from": "2026-11", "monthly_cost": 200}]}, self.DASH)
+        self.ingest("m", [
+            # October (EUR 100): 10 input units vs 2 output x5 = 10 units -> 50/50
+            self.sess("oct-in", "a", last="2026-10-05T10:00:00Z", i=10, o=0),
+            self.sess("oct-out", "b", last="2026-10-20T10:00:00Z", i=0, o=2),
+            # November (EUR 200): 1000 cache reads x0.1 = 100 units vs 100 input -> 50/50
+            self.sess("nov-cache", "c", last="2026-11-02T10:00:00Z", i=0, o=0, cr=1000),
+            self.sess("nov-in", "IG3 work", last="2026-11-03T10:00:00Z", i=100, o=0),
+            # before the first price entry: no cost
+            self.sess("sep", "d", last="2026-09-30T10:00:00Z", i=50, o=0),
+        ])
+        s = self.sessions()
+        self.assertEqual((s["oct-in"]["cost"], s["oct-out"]["cost"]), (50, 50))
+        self.assertEqual((s["nov-cache"]["cost"], s["nov-in"]["cost"]), (100, 100))
+        self.assertEqual(s["sep"]["cost"], 0)
+        # each month's sessions add up to that month's price
+        self.assertAlmostEqual(sum(v["cost"] for v in s.values() if v["month"] == "2026-11"), 200)
 
     def test_auth(self):
         self.assertEqual(self.call("/healthz")[0], 200)

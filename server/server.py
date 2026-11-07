@@ -14,6 +14,7 @@ Environment:
 import base64
 import hmac
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -91,6 +92,73 @@ def set_tag(kind, key, value):
         save_json(TAGS_FILE, tags)
 
 
+SETTINGS_FILE = DATA_DIR / "settings.json"
+# Relative price of each token type, following Anthropic's pricing ratios
+# (output 5x input, cache write 1.25x, cache read 0.1x). Used only to split
+# the subscription cost fairly, since cache reads are most of the raw tokens.
+DEFAULT_WEIGHTS = {"input_tokens": 1, "output_tokens": 5, "cache_creation_input_tokens": 1.25,
+                   "cache_read_input_tokens": 0.1}
+
+
+def load_settings():
+    """settings.json: currency, subscription price per month (each entry
+    applies from its month until the next one) and token weights."""
+    st = load_json(SETTINGS_FILE, {})
+    st.setdefault("currency", "EUR")
+    st.setdefault("plans", [])
+    st["weights"] = {**DEFAULT_WEIGHTS, **st.get("weights", {})}
+    return st
+
+
+def save_settings(data):
+    if not isinstance(data, dict):
+        raise ValueError
+    currency = str(data.get("currency") or "EUR").strip()[:8]
+    plans = []
+    for p in data.get("plans") or []:
+        frm, cost = str(p["from"]), float(p["monthly_cost"])
+        datetime.strptime(frm, "%Y-%m")  # raises ValueError on bad month
+        if not math.isfinite(cost) or cost < 0:
+            raise ValueError
+        plans.append({"from": frm, "monthly_cost": round(cost, 2)})
+    if len({p["from"] for p in plans}) != len(plans):
+        raise ValueError("duplicate month")
+    weights = {k: float(v) for k, v in (data.get("weights") or {}).items() if k in TOKEN_KEYS}
+    if any(not math.isfinite(v) or v < 0 for v in weights.values()):
+        raise ValueError
+    st = {"currency": currency, "plans": sorted(plans, key=lambda p: p["from"]),
+          "weights": {**DEFAULT_WEIGHTS, **weights}}
+    with _lock:
+        save_json(SETTINGS_FILE, st)
+    return st
+
+
+def plan_cost(plans, month):
+    """Subscription price in force for a YYYY-MM month (0 before the first entry)."""
+    cost = 0
+    for p in plans:  # sorted by "from"
+        if p["from"] <= month:
+            cost = p["monthly_cost"]
+    return cost
+
+
+def add_costs(sessions, settings):
+    """Split each month's subscription price across that month's sessions in
+    proportion to their weighted tokens. A session counts in the month of its
+    last activity."""
+    w = settings["weights"]
+    month_units = {}
+    for s in sessions:
+        s["units"] = sum(s.get(k, 0) * w[k] for k in TOKEN_KEYS)
+        s["month"] = (s.get("last") or "")[:7]
+        month_units[s["month"]] = month_units.get(s["month"], 0) + s["units"]
+    for s in sessions:
+        total = month_units[s["month"]]
+        price = plan_cost(settings["plans"], s["month"]) if s["month"] else 0
+        s["cost"] = round(price * s["units"] / total, 4) if total else 0
+    return sessions
+
+
 TAG_SECTIONS = ("sessions", "projects", "titles", "title_rules", "path_rules")
 
 
@@ -159,7 +227,7 @@ def all_sessions():
         s["category"] = s["session_tag"] or s["title_tag"] or s["rule_tag"] or s["project_tag"] or "untagged"
         out.append(s)
     out.sort(key=lambda s: s.get("last") or "", reverse=True)
-    return out
+    return add_costs(out, load_settings())
 
 
 def machines():
@@ -221,6 +289,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(all_sessions()))
         elif self.path == "/api/machines":
             self._send(200, json.dumps(machines()))
+        elif self.path == "/api/settings":
+            self._send(200, json.dumps(load_settings()))
         elif self.path == "/api/tags":
             self._send(200, json.dumps(load_tags(), indent=2, ensure_ascii=False),
                        headers=[("Content-Disposition", 'attachment; filename="tags.json"')])
@@ -247,6 +317,14 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, KeyError, TypeError):
                 return self._send(400, '{"error":"bad request"}')
             return self._send(200, '{"ok":true}')
+        if self.path == "/api/settings":
+            if not self._dashboard_ok():
+                return
+            try:
+                st = save_settings(self._body())
+            except (ValueError, KeyError, TypeError):
+                return self._send(400, '{"error":"invalid settings: months must be YYYY-MM, costs and weights >= 0"}')
+            return self._send(200, json.dumps(st))
         if self.path in ("/api/tags", "/api/tags?mode=replace"):
             if not self._dashboard_ok():
                 return

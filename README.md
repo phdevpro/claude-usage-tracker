@@ -73,6 +73,22 @@ macOS / Linux (cron):
 The machine name defaults to the computer name; override it with
 `"machine": "private-laptop"` in `agent.json`.
 
+## Cost per tag
+
+Set your subscription price in **Settings** at the bottom of the dashboard
+(saved in `/data/settings.json`). Each line applies from its month until the
+next one, so add a line when the plan or price changes.
+
+Each month's price is split across that month's sessions (all machines) in
+proportion to their weighted tokens, and a session counts in the month of its
+last activity. Weights default to Anthropic's price ratios relative to an
+input token: output 5, cache write 1.25, cache read 0.1. Raw token counts
+would over-charge sessions with many cheap cache reads.
+
+Claude Code deletes transcripts after ~30 days, so months before the first
+agent run are incomplete. Start the first price line at the month tracking
+began to avoid charging a whole month to the few sessions that survived.
+
 ## Tagging
 
 From strongest to weakest:
