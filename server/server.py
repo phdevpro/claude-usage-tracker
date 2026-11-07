@@ -210,6 +210,7 @@ def all_sessions():
     for row in rows:
         s = json.loads(row["data"])
         s["machine"] = row["machine"]
+        s.setdefault("source", "code")  # agents before 1.1 only sent Claude Code sessions
         s["total"] = sum(s.get(k, 0) for k in TOKEN_KEYS)
         s["session_tag"] = tags["sessions"].get(s["id"])
         # one tag for every session sharing this exact title (e.g. scheduled runs)

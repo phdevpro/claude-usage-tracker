@@ -33,6 +33,7 @@ class AgentScanTest(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp())
         agent.PROJECTS_DIR = self.dir
         agent.CACHE_FILE = self.dir / "cache.json"
+        agent.COWORK_ROOTS = []  # keep the real machine's Cowork tasks out of these tests
         proj = self.dir / "C--Dev-IG3-app"
         (proj / "s1" / "subagents").mkdir(parents=True)
         (proj / "s1.jsonl").write_text(
@@ -63,6 +64,46 @@ class AgentScanTest(unittest.TestCase):
         self.assertEqual(s["subagent_files"], 1)
         self.assertEqual(s["models"], {"claude-x": 100, "claude-y": 3})
         self.assertEqual((s["first"], s["last"]), ("2026-11-01T10:00:00Z", "2026-11-01T10:01:00Z"))
+
+    def test_cowork_tasks(self):
+        root = Path(tempfile.mkdtemp()) / "local-agent-mode-sessions"
+        org = root / "acct" / "org"
+        task = org / "local_abc"
+        proj = task / ".claude" / "projects" / "C--sandbox-outputs"
+        (proj / "t2" / "subagents").mkdir(parents=True)
+        # a resumed task has two transcripts plus a subagent: one session in total
+        (proj / "t1.jsonl").write_text(
+            line(type="user", timestamp="2026-11-02T09:00:00Z", cwd="C:\\sandbox\\outputs", message={"content": "plan the videos"})
+            + line(type="assistant", timestamp="2026-11-02T09:00:10Z", requestId="r1",
+                   message={"id": "c1", "model": "claude-x", "usage": usage(100, 10)}), encoding="utf-8")
+        (proj / "t2.jsonl").write_text(
+            line(type="assistant", timestamp="2026-11-03T09:00:00Z", requestId="r2",
+                 message={"id": "c2", "model": "claude-x", "usage": usage(50, 5)}), encoding="utf-8")
+        (proj / "t2" / "subagents" / "a.jsonl").write_text(
+            line(type="assistant", timestamp="2026-11-03T09:05:00Z", requestId="r3",
+                 message={"id": "c3", "model": "claude-y", "usage": usage(1, 1)}), encoding="utf-8")
+        (org / "local_abc.json").write_text(json.dumps({
+            "title": "IG3 - Video planning", "userSelectedFolders": ["C:\\Projects\\Formazione"],
+            "emailAddress": "someone@example.com", "initialMessage": "secret prompt"}), encoding="utf-8")
+        # a task with no metadata file and no readable prompt
+        bare = org / "local_bare" / ".claude" / "projects" / "p"
+        bare.mkdir(parents=True)
+        (bare / "x.jsonl").write_text(line(type="assistant", timestamp="2026-11-04T09:00:00Z", requestId="r",
+                                           message={"id": "b", "usage": usage(1, 1)}), encoding="utf-8")
+        agent.COWORK_ROOTS = [root]
+        try:
+            s = {x["id"]: x for x in agent.scan_all()}
+        finally:
+            agent.COWORK_ROOTS = []
+        self.assertEqual(s["s1"]["source"], "code")
+        c = s["local_abc"]
+        self.assertEqual((c["source"], c["name"], c["project"]), ("cowork", "IG3 - Video planning", "C:\\Projects\\Formazione"))
+        self.assertEqual((c["turns"], c["input_tokens"], c["subagent_files"]), (3, 151, 1))
+        self.assertEqual((c["first"], c["last"]), ("2026-11-02T09:00:00Z", "2026-11-03T09:05:00Z"))
+        # only title and folder are taken from the metadata
+        self.assertNotIn("secret prompt", json.dumps(c))
+        self.assertNotIn("someone@example.com", json.dumps(c))
+        self.assertEqual((s["local_bare"]["name"], s["local_bare"]["project"]), ("Untitled Cowork task", "Cowork"))
 
     def test_fresh_machine_without_claude_dir(self):
         # Claude Code never ran here: no ~/.claude at all, and the log lives inside it

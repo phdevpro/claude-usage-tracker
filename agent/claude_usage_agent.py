@@ -1,6 +1,7 @@
 """Claude usage agent.
 
-Scans this machine's Claude Code transcripts (~/.claude/projects), sums
+Scans this machine's Claude Code transcripts (~/.claude/projects) and Cowork
+tasks (the Claude desktop app's local-agent-mode-sessions), sums
 token usage per session and sends the totals to the Claude usage server.
 Only titles, project paths, timestamps and token counts are sent - never
 the conversation content.
@@ -25,7 +26,7 @@ import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
-AGENT_VERSION = "1.0"
+AGENT_VERSION = "1.1"
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 # cache lives in the user profile, not next to the script, so a script shared
 # via OneDrive doesn't share one cache between machines
@@ -102,13 +103,53 @@ def scan_file(path):
     return st
 
 
+def cowork_roots():
+    """Folders where the Claude desktop app keeps Cowork tasks."""
+    home = Path.home()
+    roots = [home / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions",  # macOS
+             home / ".config" / "Claude" / "local-agent-mode-sessions"]                          # Linux
+    for env in ("APPDATA", "LOCALAPPDATA"):                                                     # Windows
+        if os.environ.get(env):
+            roots.append(Path(os.environ[env]) / "Claude" / "local-agent-mode-sessions")
+    if os.environ.get("LOCALAPPDATA"):
+        roots += Path(os.environ["LOCALAPPDATA"], "Claude-Data").glob("*/local-agent-mode-sessions")
+    seen, out = set(), []
+    for r in roots:
+        if r.is_dir() and r.resolve() not in seen:
+            seen.add(r.resolve())
+            out.append(r)
+    return out
+
+
+COWORK_ROOTS = None  # None = detect with cowork_roots(); tests set a list
+
+
+def transcripts():
+    """Yield (path, session id, is_main, project dir, cowork task dir or None)."""
+    if PROJECTS_DIR.is_dir():
+        for path in PROJECTS_DIR.rglob("*.jsonl"):
+            rel = path.relative_to(PROJECTS_DIR).parts
+            # <project>/<session>.jsonl, or <project>/<session>/subagents/<agent>.jsonl
+            yield path, (rel[1] if len(rel) > 2 else path.stem), len(rel) == 2, rel[0], None
+    for root in COWORK_ROOTS if COWORK_ROOTS is not None else cowork_roots():
+        # Cowork: <root>/<account>/<org>/local_<id>/.claude/projects/<folder>/<id>.jsonl, same
+        # format as Claude Code. A task resumed later holds several transcripts: count them as one.
+        for task in root.glob("*/*/local_*"):
+            proj = task / ".claude" / "projects"
+            if not proj.is_dir():
+                continue
+            for path in proj.rglob("*.jsonl"):
+                rel = path.relative_to(proj).parts
+                yield path, task.name, len(rel) == 2, rel[0], task
+
+
 def scan_all():
     """Aggregate every transcript (incl. subagent ones) into sessions.
     Unchanged files are served from a cache keyed on size+mtime."""
     cache = load_json(CACHE_FILE, {})
     new_cache = {}
     sessions = {}
-    for path in PROJECTS_DIR.rglob("*.jsonl"):
+    for path, sid, is_main, project_dir, task in transcripts():
         try:
             s = path.stat()
         except OSError:
@@ -118,21 +159,18 @@ def scan_all():
         st = hit["st"] if hit and hit["sig"] == sig else scan_file(path)
         new_cache[str(path)] = {"sig": sig, "st": st}
 
-        rel = path.relative_to(PROJECTS_DIR).parts
-        # <project>/<session>.jsonl, or <project>/<session>/subagents/<agent>.jsonl
-        sid = rel[1] if len(rel) > 2 else path.stem
         sess = sessions.setdefault(sid, {
-            "id": sid, "project_dir": rel[0], "cwd": None, "title": None, "custom_title": None,
+            "id": sid, "project_dir": project_dir, "task": task, "cwd": None, "title": None, "custom_title": None,
             "first_prompt": None, "first": None, "last": None, "turns": 0, "models": {},
             "subagent_files": 0, **{k: 0 for k in TOKEN_KEYS}})
-        if len(rel) > 2:
+        if not is_main:
             sess["subagent_files"] += 1
         for k in TOKEN_KEYS + ("turns",):
             sess[k] += st[k]
         for m, v in st["models"].items():
             sess["models"][m] = sess["models"].get(m, 0) + v
         for k in ("cwd", "title", "custom_title", "first_prompt"):
-            if len(rel) == 2 and st[k]:
+            if is_main and st[k]:
                 sess[k] = st[k]
             sess[k] = sess[k] or st[k]
         if st["first"]:
@@ -147,10 +185,21 @@ def scan_all():
     for s in sessions.values():
         if not s["turns"]:
             continue
+        source, project = "code", s["cwd"] or s["project_dir"]
+        if s["task"]:
+            # the task's metadata (next to its folder) has the title shown in the app and the
+            # folder the user picked; the transcript's own cwd is a path inside the app's sandbox.
+            # Only these two fields are read - not the prompt, email or anything else in there.
+            meta = load_json(Path(str(s["task"]) + ".json"), {})
+            folders = meta.get("userSelectedFolders") or []
+            source, project = "cowork", (folders[0] if folders and isinstance(folders[0], str) else "Cowork")
+            s["custom_title"] = meta.get("title") or s["custom_title"]
         out.append({
             "id": s["id"],
-            "project": s["cwd"] or s["project_dir"],
-            "name": s["custom_title"] or s["title"] or s["first_prompt"] or s["id"][:8],
+            "source": source,
+            "project": project,
+            "name": s["custom_title"] or s["title"] or s["first_prompt"]
+                    or ("Untitled Cowork task" if s["task"] else s["id"][:8]),
             "first": s["first"], "last": s["last"], "turns": s["turns"],
             "models": s["models"], "subagent_files": s["subagent_files"],
             **{k: s[k] for k in TOKEN_KEYS},
@@ -170,16 +219,17 @@ def send(server, token, machine, sessions):
 
 
 def run_once(cfg, dry_run):
-    if not PROJECTS_DIR.is_dir():
-        # not an error: Claude Code just hasn't been used on this machine yet
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] nothing to send yet: no Claude Code transcripts at {PROJECTS_DIR}")
-        return True
     t0 = time.time()
     sessions = scan_all()
     took = time.time() - t0
+    if not sessions:
+        # not an error: Claude Code / Cowork just haven't been used on this machine yet
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] nothing to send yet: no Claude Code transcripts at {PROJECTS_DIR} and no Cowork tasks")
+        return True
     if dry_run:
         total = sum(sum(s[k] for k in TOKEN_KEYS) for s in sessions)
-        print(f"[{cfg['machine']}] {len(sessions)} sessions, {total:,} tokens (scan {took:.1f}s) - dry run, nothing sent")
+        cowork = sum(1 for s in sessions if s["source"] == "cowork")
+        print(f"[{cfg['machine']}] {len(sessions)} sessions ({cowork} Cowork), {total:,} tokens (scan {took:.1f}s) - dry run, nothing sent")
         return True
     try:
         res = send(cfg["server"], cfg["token"], cfg["machine"], sessions)

@@ -10,9 +10,12 @@ splits it into **work** and **private**.
 ```
 
 - **server/**: receives usage from agents, stores it, serves the dashboard.
-- **agent/**: runs on each machine, reads `~/.claude/projects` and sends
-  per-session totals. It sends titles, project paths, timestamps and token
+- **agent/**: runs on each machine, reads Claude Code's `~/.claude/projects`
+  and the Claude desktop app's Cowork tasks (`local-agent-mode-sessions`), and
+  sends per-session totals. It sends titles, project paths, timestamps and token
   counts only, never conversation content.
+  Chat conversations (claude.ai / the desktop Chat tab) are not stored locally
+  with token counts, so they can't be tracked.
 - `token_tracker.py` is the original single-machine version and still works on its own.
 
 ## Image publishing
