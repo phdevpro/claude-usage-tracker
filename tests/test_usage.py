@@ -117,6 +117,13 @@ class ServerTest(unittest.TestCase):
         return {"id": sid, "name": name, "project": project, "last": last, "turns": 1,
                 **usage(tok.get("i", 1), tok.get("o", 1), tok.get("cw", 0), tok.get("cr", 0))}
 
+    def test_report_page_requires_login(self):
+        req = urllib.request.Request(self.base + "/report?month=2026-11", headers={"Authorization": self.DASH})
+        with urllib.request.urlopen(req) as r:
+            self.assertEqual(r.status, 200)
+            self.assertIn(b"size: 105mm 148mm", r.read())
+        self.assertEqual(self.call("/report?month=2026-11")[0], 401)
+
     def test_settings_defaults_and_validation(self):
         st = self.call("/api/settings", auth=self.DASH)[1]
         self.assertEqual((st["currency"], st["plans"]), ("EUR", []))

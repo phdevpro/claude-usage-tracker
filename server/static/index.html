@@ -43,6 +43,7 @@
   .settings input[type=number] { width:110px; }
   .hint { color:var(--muted); font-size:12px; max-width:760px; }
   tr.total td { font-weight:600; }
+  a { color:var(--work); }
 </style>
 </head>
 <body>
@@ -81,7 +82,7 @@
   <h2>Monthly cost — subscription split by tag</h2>
   <div class="wrap"><table>
     <thead><tr><th>Month</th><th class="num">Subscription</th><th class="num">Work</th><th class="num">Private</th>
-      <th class="num">Untagged</th><th class="num">Work share</th><th class="num">Sessions</th></tr></thead>
+      <th class="num">Untagged</th><th class="num">Work share</th><th class="num">Sessions</th><th>Report</th></tr></thead>
     <tbody id="monthrows"></tbody>
   </table></div>
   <p class="hint">Each month's subscription price is split across that month's sessions (all machines) in proportion to
@@ -239,10 +240,11 @@ function renderMonths() {
     const used = r.work + r.private + r.untagged;
     return `<tr class="${cls}"><td>${label}</td><td class="num">${money(plan)}</td>
       <td class="num">${money(r.work)}</td><td class="num">${money(r.private)}</td><td class="num">${money(r.untagged)}</td>
-      <td class="num">${used ? Math.round(r.work / used * 100) + "%" : "–"}</td><td class="num">${r.n}</td></tr>`;
+      <td class="num">${used ? Math.round(r.work / used * 100) + "%" : "–"}</td><td class="num">${r.n}</td>
+      <td>${cls ? "" : `<a href="/report?month=${label}" target="_blank" rel="noopener">A6 PDF</a>`}</td></tr>`;
   };
   $("monthrows").innerHTML = !hasCost()
-    ? `<tr><td colspan="7" class="det">Set your subscription price in Settings below to see monthly costs.</td></tr>`
+    ? `<tr><td colspan="8" class="det">Set your subscription price in Settings below to see monthly costs.</td></tr>`
     : list.map(([m, r]) => {
         const plan = planFor(m);
         tot.plan += plan; ["work", "private", "untagged", "n"].forEach(k => tot[k] += r[k]);

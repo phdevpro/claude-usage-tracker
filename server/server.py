@@ -285,6 +285,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/":
             self._send(200, (HERE / "static" / "index.html").read_bytes(), "text/html")
+        elif self.path.split("?")[0] == "/report":
+            # printable A6 monthly report; the month comes from ?month=YYYY-MM, read by the page
+            self._send(200, (HERE / "static" / "report.html").read_bytes(), "text/html")
         elif self.path == "/api/sessions":
             self._send(200, json.dumps(all_sessions()))
         elif self.path == "/api/machines":

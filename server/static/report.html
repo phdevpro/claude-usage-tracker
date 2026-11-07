@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude usage report</title>
+<style>
+  /* A6 portrait (105 x 148 mm). Chromium doesn't know the "A6" keyword, so the
+     size is given in mm. Always light: this page is meant for paper/PDF. */
+  @page { size: 105mm 148mm; margin: 7mm; }
+  :root { --fg:#1d1d1b; --muted:#6b6b66; --line:#d9d9d4; --work:#2563eb; --private:#d9480f; }
+  * { box-sizing:border-box; }
+  html { background:#e9e9e5; }
+  body { margin:0; color:var(--fg); font:8.5pt/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
+         -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .toolbar { display:flex; gap:8px; justify-content:center; align-items:center; padding:12px; font-size:14px; }
+  .toolbar select, .toolbar button { font:inherit; padding:5px 10px; border:1px solid #bbb; border-radius:6px; background:#fff; cursor:pointer; }
+  /* on screen, show the sheet at its real A6 size */
+  .sheet { width:105mm; min-height:148mm; margin:0 auto 24px; padding:7mm; background:#fff; box-shadow:0 1px 6px rgba(0,0,0,.18); }
+  @media print {
+    html { background:#fff; }
+    .toolbar { display:none; }
+    .sheet { width:auto; min-height:0; margin:0; padding:0; box-shadow:none; }
+  }
+  header { border-bottom:1.5px solid var(--fg); padding-bottom:2mm; margin-bottom:2.5mm; }
+  .kicker { font-size:7pt; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+  h1 { font-size:15pt; margin:.5mm 0 0; line-height:1.1; }
+  .plan { color:var(--muted); margin-top:1mm; }
+  .totals { display:grid; grid-template-columns:1fr 1fr; gap:2.5mm; margin-bottom:2.5mm; }
+  .tile { border:1px solid var(--line); border-radius:2mm; padding:2mm 2.5mm; }
+  .tile .lbl { font-size:7pt; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  .tile .val { font-size:14pt; font-weight:650; font-variant-numeric:tabular-nums; line-height:1.15; }
+  .tile .det { font-size:7pt; color:var(--muted); }
+  .dot { display:inline-block; width:2mm; height:2mm; border-radius:50%; margin-right:1mm; vertical-align:middle; }
+  .work { background:var(--work); } .private { background:var(--private); }
+  .bar { display:flex; height:2mm; border-radius:1mm; overflow:hidden; margin-bottom:2.5mm; background:var(--line); }
+  h2 { font-size:7.5pt; text-transform:uppercase; letter-spacing:.05em; margin:2.5mm 0 .5mm; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  td, th { padding:.5mm 0; border-bottom:.5px solid var(--line); text-align:left; vertical-align:top; }
+  th { font-size:6.5pt; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .num { text-align:right; white-space:nowrap; padding-left:2mm; }
+  .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:0; width:100%; }
+  tr.sum td { font-weight:650; border-bottom:none; }
+  footer { margin-top:2.5mm; padding-top:1mm; border-top:.5px solid var(--line); font-size:6.5pt; color:var(--muted); }
+  .empty { color:var(--muted); padding:8mm 0; text-align:center; }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <select id="month"></select>
+  <button id="print">Print / Save as PDF</button>
+</div>
+<div class="sheet" id="sheet"><div class="empty">Loading…</div></div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = n => n >= 1e9 ? (n/1e9).toFixed(2)+"B" : n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n);
+const TAGS = [["work", "Work"], ["private", "Private"]];
+let data = [], settings = {};
+const money = v => { try { return new Intl.NumberFormat(undefined, { style: "currency", currency: settings.currency }).format(v); }
+                     catch { return `${v.toFixed(2)} ${settings.currency}`; } };
+const monthName = m => new Date(m + "-01T12:00:00").toLocaleDateString(undefined, { month: "long", year: "numeric" });
+const planFor = m => settings.plans.reduce((c, p) => p.from <= m ? p.monthly_cost : c, 0);
+
+async function init() {
+  [data, settings] = await Promise.all(["/api/sessions", "/api/settings"].map(u => fetch(location.origin + u).then(r => r.json())));
+  const months = [...new Set(data.map(s => s.month).filter(Boolean))].sort().reverse();
+  const wanted = new URLSearchParams(location.search).get("month");
+  $("month").innerHTML = months.map(m => `<option value="${m}" ${m === wanted ? "selected" : ""}>${esc(monthName(m))}</option>`).join("");
+  render();
+}
+
+function render() {
+  const m = $("month").value;
+  history.replaceState(null, "", "?month=" + m);
+  document.title = `Claude usage ${m}`;   // becomes the default PDF file name
+  const plan = planFor(m);
+  if (!m || !plan) {
+    $("sheet").innerHTML = `<div class="empty">${m ? `No subscription price set for ${esc(monthName(m))}.<br>Add one in the dashboard's Settings.` : "No data yet."}</div>`;
+    return;
+  }
+  // untagged sessions are left out of the report on purpose
+  const rows = data.filter(s => s.month === m && (s.category === "work" || s.category === "private"));
+  const by = Object.fromEntries(TAGS.map(([t]) => {
+    const list = rows.filter(s => s.category === t);
+    return [t, { cost: list.reduce((a, s) => a + s.cost, 0), tokens: list.reduce((a, s) => a + s.total, 0), list }];
+  }));
+  const tagged = by.work.cost + by.private.cost;
+  const pct = v => tagged ? Math.round(v / tagged * 100) + "%" : "–";
+  const machines = [...new Set(rows.map(s => s.machine))].sort();
+
+  $("sheet").innerHTML = `
+    <header>
+      <div class="kicker">Claude usage report</div>
+      <h1>${esc(monthName(m))}</h1>
+      <div class="plan">Subscription ${money(plan)} / month · tagged total <b>${money(tagged)}</b></div>
+    </header>
+    <div class="totals">${TAGS.map(([t, l]) => `
+      <div class="tile"><div class="lbl"><span class="dot ${t}"></span>${l}</div>
+        <div class="val">${money(by[t].cost)}</div>
+        <div class="det">${pct(by[t].cost)} · ${fmt(by[t].tokens)} tokens</div></div>`).join("")}
+    </div>
+    <div class="bar">${tagged ? TAGS.map(([t]) => `<div class="${t}" style="width:${by[t].cost / tagged * 100}%"></div>`).join("") : ""}</div>
+    <table>
+      <tr><th>Tag</th><th class="num">Tokens</th><th class="num">Cost</th></tr>
+      ${TAGS.map(([t, l]) => `<tr><td><span class="dot ${t}"></span>${l}</td>
+        <td class="num">${fmt(by[t].tokens)}</td><td class="num">${money(by[t].cost)}</td></tr>`).join("")}
+      <tr class="sum"><td>Total</td><td class="num">${fmt(by.work.tokens + by.private.tokens)}</td><td class="num">${money(tagged)}</td></tr>
+    </table>
+    <footer>Cost = monthly subscription split by weighted tokens (input ${settings.weights.input_tokens}, output ${settings.weights.output_tokens},
+      cache write ${settings.weights.cache_creation_input_tokens}, cache read ${settings.weights.cache_read_input_tokens}).
+      Untagged sessions not included.
+      Machines: ${esc(machines.join(", ") || "–")}. Generated ${new Date().toLocaleDateString()}.</footer>`;
+}
+
+$("month").onchange = render;
+$("print").onclick = () => window.print();
+init();
+</script>
+</body>
+</html>

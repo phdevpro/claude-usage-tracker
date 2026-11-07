@@ -89,6 +89,13 @@ Claude Code deletes transcripts after ~30 days, so months before the first
 agent run are incomplete. Start the first price line at the month tracking
 began to avoid charging a whole month to the few sessions that survived.
 
+### Monthly A6 report
+
+The **A6 PDF** link next to each month in the Monthly cost table opens a
+one-page report (105 × 148 mm) with tokens and cost for work and private.
+Untagged sessions are left out. Click **Print / Save as PDF** and choose
+"Save as PDF" in the print dialog; the page size is set automatically.
+
 ## Tagging
 
 From strongest to weakest:
