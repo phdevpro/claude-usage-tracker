@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Tracker</title>
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --fg:#1d1d1b; --muted:#6b6b66; --line:#e3e3de;
+          --work:#2563eb; --private:#d9480f; --none:#9a9a94; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --card:#1f1f1d; --fg:#ececea; --muted:#a3a39e; --line:#33332f;
+            --work:#6b9bff; --private:#ff8a50; --none:#77776f; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; }
+  main { max-width:1300px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin-bottom:16px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .card .lbl { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .val { font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .card .det { color:var(--muted); font-size:12px; }
+  .bar { display:flex; height:10px; border-radius:5px; overflow:hidden; margin:4px 0 16px; background:var(--line); }
+  .controls { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; align-items:center; }
+  input, select, button { font:inherit; color:inherit; background:var(--card); border:1px solid var(--line); border-radius:6px; padding:5px 8px; }
+  button { cursor:pointer; }
+  .wrap { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:10px; }
+  table { border-collapse:collapse; width:100%; }
+  th, td { padding:7px 10px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+  th { position:sticky; top:0; background:var(--card); font-size:12px; color:var(--muted); cursor:pointer; user-select:none; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  td.name { white-space:normal; min-width:260px; max-width:420px; }
+  .proj { color:var(--muted); font-size:12px; word-break:break-all; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  .work { background:var(--work); } .private { background:var(--private); } .untagged { background:var(--none); }
+  .mixed { background:linear-gradient(90deg, var(--work) 50%, var(--private) 50%); }
+  .inh { color:var(--muted); font-size:11px; }
+  h2 { font-size:15px; margin:24px 0 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Claude Code token tracker</h1>
+  <div class="sub" id="sub">Loading…</div>
+
+  <div class="cards" id="cards"></div>
+  <div class="bar" id="bar"></div>
+
+  <div class="controls">
+    <input id="q" placeholder="Search name or project…" size="30">
+    <select id="fcat"><option value="">All categories</option><option>work</option><option>private</option><option>untagged</option></select>
+    <select id="fmonth"><option value="">All months</option></select>
+    <label><input type="checkbox" id="group" checked> Group by title</label>
+    <button id="reload">Rescan</button>
+    <button id="csv">Export CSV</button>
+  </div>
+
+  <div class="wrap"><table>
+    <thead><tr>
+      <th data-k="name">Session</th><th data-k="last">Last activity</th><th data-k="category">Category</th>
+      <th class="num" data-k="turns">Calls</th><th class="num" data-k="input_tokens">Input</th>
+      <th class="num" data-k="output_tokens">Output</th><th class="num" data-k="cache_creation_input_tokens">Cache write</th>
+      <th class="num" data-k="cache_read_input_tokens">Cache read</th><th class="num" data-k="total">Total</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+
+  <h2>Projects — set a default for every session in a project</h2>
+  <div class="wrap"><table>
+    <thead><tr><th>Project</th><th class="num">Sessions</th><th class="num">Total tokens</th><th>Default category</th></tr></thead>
+    <tbody id="projrows"></tbody>
+  </table></div>
+</main>
+<script>
+let data = [], sortK = "last", sortDir = -1;
+const fmt = n => n >= 1e9 ? (n/1e9).toFixed(2)+"B" : n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const month = s => (s.last || "").slice(0, 7);
+const $ = id => document.getElementById(id);
+const TOK = ["turns", "input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "total"];
+const recat = s => s.category = s.session_tag || s.title_tag || s.rule_tag || s.project_tag || "untagged";
+const tagSelect = (attr, key, current, auto) => `<select ${attr}="${esc(key)}">
+      <option value="" ${!current ? "selected" : ""}>${auto}</option>
+      <option value="work" ${current === "work" ? "selected" : ""}>work</option>
+      <option value="private" ${current === "private" ? "selected" : ""}>private</option></select>`;
+// label for a title group with no title tag: say where its current category comes from
+const groupLabel = g => g.category === "mixed" ? "mixed" : g.category === "untagged" ? "untagged"
+  : g.rule_tag === g.category ? `auto: ${g.rule_tag} (${esc(g.rule_keyword)})`
+  : g.project_tag === g.category ? "project: " + g.project_tag : g.category + " (per session)";
+const autoLabel = s => s.title_tag ? "title: " + s.title_tag : s.rule_tag ? `auto: ${s.rule_tag} (${esc(s.rule_keyword)})` : s.project_tag ? "project: " + s.project_tag : "untagged";
+
+async function load() {
+  $("sub").textContent = "Scanning transcripts…";
+  data = await (await fetch("/api/sessions")).json();
+  const months = [...new Set(data.map(month).filter(Boolean))].sort().reverse();
+  const cur = $("fmonth").value;
+  $("fmonth").innerHTML = '<option value="">All months</option>' + months.map(m => `<option ${m===cur?"selected":""}>${m}</option>`).join("");
+  render();
+}
+
+function filtered() {
+  const q = $("q").value.toLowerCase(), c = $("fcat").value, m = $("fmonth").value;
+  return data.filter(s => (!c || s.category === c) && (!m || month(s) === m) &&
+    (!q || (s.name + " " + s.project).toLowerCase().includes(q)));
+}
+
+function render() {
+  const rows = filtered();
+  const sum = cat => rows.filter(s => !cat || s.category === cat).reduce((a, s) => a + s.total, 0);
+  const cnt = cat => rows.filter(s => s.category === cat).length;
+  const all = sum(), w = sum("work"), p = sum("private"), u = sum("untagged");
+  const pct = x => all ? Math.round(x / all * 100) + "%" : "0%";
+  const out = rows.reduce((a, s) => a + s.output_tokens, 0);
+  $("sub").textContent = `${rows.length} sessions shown · ${data.length} total · tokens = input + output + cache write + cache read`;
+  $("cards").innerHTML = [
+    ["All", all, `${rows.length} sessions · ${fmt(out)} output`, ""],
+    ["Work", w, `${cnt("work")} sessions · ${pct(w)}`, "work"],
+    ["Private", p, `${cnt("private")} sessions · ${pct(p)}`, "private"],
+    ["Untagged", u, `${cnt("untagged")} sessions · ${pct(u)}`, "untagged"],
+  ].map(([l, v, d, c]) => `<div class="card"><div class="lbl">${c ? `<span class="dot ${c}"></span>` : ""}${l}</div><div class="val">${fmt(v)}</div><div class="det">${d}</div></div>`).join("");
+  $("bar").innerHTML = all ? [["work", w], ["private", p], ["untagged", u]].map(([c, v]) => `<div class="${c}" style="width:${v/all*100}%"></div>`).join("") : "";
+
+  const grouped = $("group").checked;
+  let list = rows;
+  if (grouped) {
+    // one row per distinct title; the tag applies to every session with that title
+    const g = {};
+    for (const s of rows) {
+      const r = g[s.name] ??= { name: s.name, count: 0, last: "", projects: new Set(), cats: new Set(),
+                                 title_tag: s.title_tag, ...Object.fromEntries(TOK.map(k => [k, 0])) };
+      r.count++; r.projects.add(s.project); r.cats.add(s.category);
+      if ((s.last || "") > r.last) r.last = s.last;
+      TOK.forEach(k => r[k] += s[k]);
+      r.rule_tag ??= s.rule_tag; r.rule_keyword ??= s.rule_keyword; r.project_tag ??= s.project_tag;
+    }
+    list = Object.values(g).map(r => ({ ...r, category: r.cats.size === 1 ? [...r.cats][0] : "mixed",
+      project: r.projects.size === 1 ? [...r.projects][0] : `${r.projects.size} projects` }));
+  }
+  list.sort((a, b) => { const x = a[sortK] ?? "", y = b[sortK] ?? ""; return (x > y ? 1 : x < y ? -1 : 0) * sortDir; });
+  $("rows").innerHTML = list.map(s => `<tr>
+    <td class="name">${esc(s.name)}${grouped && s.count > 1 ? ` <b>×${s.count}</b>` : ""}<div class="proj">${esc(s.project)}${s.subagent_files ? ` · ${s.subagent_files} subagent(s)` : ""}</div></td>
+    <td>${esc((s.last || "").replace("T", " ").slice(0, 16))}</td>
+    <td><span class="dot ${s.category}"></span>${grouped
+      ? tagSelect("data-title", s.name, s.title_tag, groupLabel(s))
+      : tagSelect("data-sid", s.id, s.session_tag, autoLabel(s))}</td>
+    <td class="num">${s.turns}</td><td class="num">${fmt(s.input_tokens)}</td><td class="num">${fmt(s.output_tokens)}</td>
+    <td class="num">${fmt(s.cache_creation_input_tokens)}</td><td class="num">${fmt(s.cache_read_input_tokens)}</td>
+    <td class="num"><b>${fmt(s.total)}</b></td></tr>`).join("");
+
+  const projs = {};
+  for (const s of data) {
+    const p = projs[s.project] ??= { n: 0, t: 0, tag: s.project_tag };
+    p.n++; p.t += s.total;
+  }
+  $("projrows").innerHTML = Object.entries(projs).sort((a, b) => b[1].t - a[1].t).map(([name, p]) => `<tr>
+    <td class="name">${esc(name)}</td><td class="num">${p.n}</td><td class="num">${fmt(p.t)}</td>
+    <td><select data-proj="${esc(name)}"><option value="">none</option>
+      <option value="work" ${p.tag === "work" ? "selected" : ""}>work</option>
+      <option value="private" ${p.tag === "private" ? "selected" : ""}>private</option></select></td></tr>`).join("");
+}
+
+async function tag(kind, key, value) {
+  await fetch("/api/tag", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind, key, value }) });
+  for (const s of data) {
+    if (kind === "sessions" && s.id === key) s.session_tag = value || null;
+    if (kind === "projects" && s.project === key) s.project_tag = value || null;
+    if (kind === "titles" && s.name === key) {
+      s.title_tag = value || null;
+      // a title tag should win for the whole group, so drop per-session overrides there
+      if (s.session_tag) { s.session_tag = null; fetch("/api/tag", { method: "POST", body: JSON.stringify({ kind: "sessions", key: s.id, value: "" }) }); }
+    }
+    recat(s);
+  }
+  render();
+}
+
+document.addEventListener("change", e => {
+  if (e.target.dataset.sid) tag("sessions", e.target.dataset.sid, e.target.value);
+  if (e.target.dataset.proj !== undefined) tag("projects", e.target.dataset.proj, e.target.value);
+  if (e.target.dataset.title !== undefined) tag("titles", e.target.dataset.title, e.target.value);
+});
+["q", "fcat", "fmonth", "group"].forEach(id => $(id).addEventListener("input", render));
+document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
+  sortDir = sortK === th.dataset.k ? -sortDir : -1; sortK = th.dataset.k; render();
+});
+$("reload").onclick = load;
+$("csv").onclick = () => {
+  const cols = ["id","name","project","category","first","last","turns","input_tokens","output_tokens","cache_creation_input_tokens","cache_read_input_tokens","total"];
+  const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const blob = new Blob([[cols.join(","), ...filtered().map(s => cols.map(c => q(s[c])).join(","))].join("\n")], { type: "text/csv" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "claude-token-usage.csv"; a.click();
+};
+load();
+</script>
+</body>
+</html>

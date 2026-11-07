@@ -1,0 +1,15 @@
+# secrets
+.env
+stack.env
+agent/agent.json
+
+# personal data: session ids/titles and local scan cache
+tags.json
+.scan_cache.json
+*.db
+
+# local tooling
+.claude/
+__pycache__/
+*.pyc
+*.tmp

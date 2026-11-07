@@ -1,0 +1,50 @@
+# Claude usage tracker – Portainer stack (Traefik on external "letsencrypt" network)
+# Environment: load deploy/stack.env.example into the stack's env (Portainer saves it as stack.env).
+
+networks:
+  letsencrypt:        # Traefik external network (already exists)
+    external: true
+
+volumes:
+  claude-usage-data:  # usage.db (SQLite) + tags.json
+
+services:
+  claude-usage:
+    container_name: claude_usage
+    image: ghcr.io/phdevpro/claude-usage-tracker:${USAGE_VERSION:-latest}
+    restart: unless-stopped
+    env_file:
+      - stack.env
+    environment:
+      DATA_DIR: /data
+      PORT: "8080"
+      TZ: Europe/Rome
+    volumes:
+      - ${USAGE_DATA_LOCATION:-claude-usage-data}:/data   # host/NFS path, or the named volume if unset
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - letsencrypt
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=letsencrypt
+
+      # HTTPS router esterno
+      - traefik.http.routers.claude-usage.rule=Host(`${USAGE_HOST}`)
+      - traefik.http.routers.claude-usage.entrypoints=websecure
+      - traefik.http.routers.claude-usage.tls=true
+      - traefik.http.routers.claude-usage.tls.certresolver=cloudflare
+
+      # Service: python http server inside the container
+      - traefik.http.services.claude-usage.loadbalancer.server.port=8080
+
+      # Security headers + compression
+      - traefik.http.routers.claude-usage.middlewares=claude-usage-sec,claude-usage-compress
+      - traefik.http.middlewares.claude-usage-compress.compress=true
+      - traefik.http.middlewares.claude-usage-sec.headers.stsSeconds=63072000
+      - traefik.http.middlewares.claude-usage-sec.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.claude-usage-sec.headers.stsPreload=true
+      - traefik.http.middlewares.claude-usage-sec.headers.forceSTSHeader=true
+      - traefik.http.middlewares.claude-usage-sec.headers.frameDeny=true
+      - traefik.http.middlewares.claude-usage-sec.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.claude-usage-sec.headers.browserXssFilter=true
+      - traefik.http.middlewares.claude-usage-sec.headers.referrerPolicy=same-origin

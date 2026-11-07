@@ -1,0 +1,4 @@
+{
+  "server": "http://YOUR-DOCKER-HOST:8080",
+  "token": "same value as AGENT_TOKEN on the server"
+}

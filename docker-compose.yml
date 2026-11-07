@@ -1,0 +1,18 @@
+services:
+  claude-usage:
+    build: ./server
+    image: ghcr.io/phdevpro/claude-usage-tracker:${USAGE_VERSION:-latest}
+    container_name: claude-usage
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # put the real values in a .env file next to this compose file (see .env.example)
+      AGENT_TOKEN: ${AGENT_TOKEN:?set AGENT_TOKEN in .env}
+      DASHBOARD_USER: ${DASHBOARD_USER:-admin}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?set DASHBOARD_PASSWORD in .env}
+    volumes:
+      - claude-usage-data:/data
+
+volumes:
+  claude-usage-data:
