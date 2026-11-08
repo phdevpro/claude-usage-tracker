@@ -44,6 +44,15 @@
   .hint { color:var(--muted); font-size:12px; max-width:760px; }
   tr.total td { font-weight:600; }
   a { color:var(--work); }
+  details.menu { position:relative; }
+  details.menu summary { list-style:none; cursor:pointer; background:var(--card); border:1px solid var(--line); border-radius:6px; padding:5px 8px; }
+  details.menu summary::-webkit-details-marker { display:none; }
+  details.menu .items { position:absolute; z-index:10; top:calc(100% + 4px); right:0; width:320px; background:var(--card);
+                        border:1px solid var(--line); border-radius:8px; padding:6px; box-shadow:0 6px 20px rgba(0,0,0,.15); }
+  details.menu .items a { display:block; padding:6px 8px; border-radius:6px; color:var(--fg); text-decoration:none; }
+  details.menu .items a:hover { background:var(--bg); }
+  details.menu .items .hint { padding:6px 8px 2px; border-top:1px solid var(--line); margin-top:4px; }
+  @media (max-width:600px) { details.menu .items { right:auto; left:0; width:min(320px, calc(100vw - 32px)); } }
   .badge { font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 4px; margin-left:4px; }
 </style>
 </head>
@@ -68,6 +77,15 @@
     <input type="file" id="tagsfile" accept=".json,application/json" hidden>
     <button id="tagsexport">Export tags</button>
     <button id="report" title="Printable A6 report: tokens and cost per tag for a month">Monthly report (A6)</button>
+    <details class="menu" id="installmenu">
+      <summary title="Download a self-installing agent for a new machine">Install agent ▾</summary>
+      <div class="items">
+        <a href="/download/claude-usage-agent-windows.cmd" download><b>Windows</b><div class="det">Double-click the .cmd: installs, sends once, schedules every 30 min</div></a>
+        <a href="/download/claude-usage-agent-linux.sh" download><b>Linux / macOS</b><div class="det">Run <code>sh claude-usage-agent-linux.sh</code>: installs, sends once, cron every 30 min</div></a>
+        <div class="hint">Python 3.9+ needed on the machine. The file contains this server's agent token: don't share it.
+          Run it again with <code>uninstall</code> (Windows) or <code>--uninstall</code> (Linux) to remove the agent.</div>
+      </div>
+    </details>
     <span id="msg" class="det"></span>
   </div>
 
@@ -304,6 +322,8 @@ document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
   sortDir = sortK === th.dataset.k ? -sortDir : -1; sortK = th.dataset.k; render();
 });
 $("reload").onclick = load;
+// close the install menu after picking a file or clicking elsewhere
+document.addEventListener("click", e => { if (!$("installmenu").contains(e.target) || e.target.closest("a")) $("installmenu").open = false; });
 $("savesettings").onclick = saveSettings;
 // opens the month picked in the filter, or the most recent month with data
 $("report").onclick = () => {

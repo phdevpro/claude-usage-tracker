@@ -1,6 +1,8 @@
 services:
   claude-usage:
-    build: ./server
+    build:
+      context: .
+      dockerfile: server/Dockerfile
     image: ghcr.io/phdevpro/claude-usage-tracker:${USAGE_VERSION:-latest}
     container_name: claude-usage
     restart: unless-stopped

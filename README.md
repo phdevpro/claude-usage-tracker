@@ -22,7 +22,7 @@ splits it into **work** and **private**.
 
 Like the other phdevpro apps, the image is built by GitHub Actions
 (`.github/workflows/docker.yml`): every push to `main` or a `v*` tag runs the
-tests, then builds `server/` and pushes `ghcr.io/phdevpro/claude-usage-tracker`
+tests, then builds the image (`server/Dockerfile`, repo root as context, so the agent is bundled for the installers) and pushes `ghcr.io/phdevpro/claude-usage-tracker`
 with the per-run `GITHUB_TOKEN`. No personal token is needed. Tags:
 `latest` (main), `sha-<commit>`, and `1.2.3` for a `v1.2.3` git tag.
 
@@ -51,6 +51,26 @@ anything other than a trusted LAN, put it behind HTTPS (a reverse proxy
 such as Caddy, Traefik or nginx, or a Cloudflare tunnel).
 
 ## 2. Run an agent on each machine
+
+### Quick install from the dashboard
+
+Click **Install agent** in the dashboard and download the installer for the
+machine. The file has the agent, the server URL and the agent token built in,
+so keep it private. Python 3.9+ is still needed on the machine.
+
+- **Windows**: double-click `claude-usage-agent-windows.cmd`. It installs to
+  `%LOCALAPPDATA%\ClaudeUsageAgent`, sends once and registers the
+  "Claude usage agent" scheduled task (every 30 minutes).
+  `claude-usage-agent-windows.cmd uninstall` removes it.
+- **Linux / macOS**: `sh claude-usage-agent-linux.sh`. It installs to
+  `~/.local/share/claude-usage-agent`, sends once and adds a cron line (or a
+  systemd user timer without cron). `--uninstall` removes it.
+
+The server URL in the installer is the one the browser used to open the
+dashboard (`X-Forwarded-Proto`/`Host` behind a proxy). Set `PUBLIC_URL` on the
+server if agents must use a different address.
+
+### Manual install
 
 Copy the `agent` folder to the machine (Python 3.9+ needed, no packages),
 copy `agent.example.json` to `agent.json` and fill in the server URL and token.

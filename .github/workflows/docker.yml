@@ -50,7 +50,8 @@ jobs:
             type=semver,pattern={{version}}
       - uses: docker/build-push-action@v6
         with:
-          context: ./server
+          context: .
+          file: server/Dockerfile
           # amd64 only, like Customer-Mapper: the Portainer server is x86.
           # Add linux/arm64 (and docker/setup-qemu-action) if that changes.
           platforms: linux/amd64

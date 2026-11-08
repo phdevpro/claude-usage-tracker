@@ -2,6 +2,7 @@
 import base64
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -180,6 +181,28 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(r.status, 200)
             self.assertIn(b"size: 105mm 148mm", r.read())
         self.assertEqual(self.call("/report?month=2026-11")[0], 401)
+
+    def test_installer_downloads(self):
+        agent_b64 = base64.b64encode((ROOT / "agent" / "claude_usage_agent.py").read_bytes()).decode()
+        for name, newline in (("claude-usage-agent-linux.sh", b"\n"), ("claude-usage-agent-windows.cmd", b"\r\n")):
+            self.assertEqual(self.call("/download/" + name)[0], 401)  # carries the agent token
+            req = urllib.request.Request(self.base + "/download/" + name, headers={
+                "Authorization": self.DASH, "X-Forwarded-Proto": "https", "X-Forwarded-Host": "usage.example.com"})
+            with urllib.request.urlopen(req) as r:
+                self.assertIn(name, r.headers["Content-Disposition"])
+                body = r.read()
+            self.assertNotIn(b"__", body.replace(b"__file__", b"").replace(b"__name__", b""))
+            self.assertIn(agent_b64.encode(), body)
+            config = json.loads(base64.b64decode(re.search(rb'"(ew[A-Za-z0-9+/=]+)"', body)[1]))
+            self.assertEqual(config, {"server": "https://usage.example.com", "token": "agent-secret"})
+            self.assertEqual(body.count(b"\n"), body.count(newline))
+        # a forged Host can't put anything but a host name in the script
+        req = urllib.request.Request(self.base + "/download/claude-usage-agent-linux.sh",
+                                     headers={"Authorization": self.DASH, "X-Forwarded-Host": "x\"; rm -rf ~; \""})
+        with urllib.request.urlopen(req) as r:
+            body = r.read()
+        self.assertTrue(b"rm -rf ~" not in body and b"server at http://localhost:" in body)
+        self.assertEqual(self.call("/download/../server.py", auth=self.DASH)[0], 404)
 
     def test_settings_defaults_and_validation(self):
         st = self.call("/api/settings", auth=self.DASH)[1]

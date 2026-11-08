@@ -10,12 +10,15 @@ Environment:
   DASHBOARD_USER      optional - Basic auth user name (default "admin")
   DATA_DIR            optional - where usage.db and tags.json live (default /data)
   PORT                optional - default 8080
+  PUBLIC_URL          optional - server URL put in downloaded agent installers
+                      (default: taken from the request, e.g. https://usage.example.com)
 """
 import base64
 import hmac
 import json
 import math
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -181,6 +184,27 @@ def import_tags(data, mode):
     return {s: len(clean[s]) for s in TAG_SECTIONS}
 
 
+# the agent sits next to server.py in the image, in ../agent in the repo
+AGENT_DIR = HERE / "agent" if (HERE / "agent").is_dir() else HERE.parent / "agent"
+INSTALLERS = {
+    "claude-usage-agent-linux.sh": ("install-linux.sh", "\n"),
+    "claude-usage-agent-windows.cmd": ("install-windows.cmd", "\r\n"),  # cmd.exe wants CRLF
+}
+
+
+def installer(name, server_url):
+    """Self-installing agent script with the agent code, server URL and agent
+    token built in. The payloads are base64 so nothing needs shell quoting."""
+    template, newline = INSTALLERS[name]
+    b64 = lambda data: base64.b64encode(data).decode("ascii")
+    config = json.dumps({"server": server_url, "token": AGENT_TOKEN}, indent=2).encode("utf-8")
+    text = (HERE / "installers" / template).read_text(encoding="utf-8")
+    text = (text.replace("__AGENT_B64__", b64((AGENT_DIR / "claude_usage_agent.py").read_bytes()))
+                .replace("__CONFIG_B64__", b64(config))
+                .replace("__SERVER__", server_url))
+    return text.replace("\r\n", "\n").replace("\n", newline).encode("utf-8")
+
+
 def ingest(payload):
     machine = str(payload["machine"])[:100]
     sessions = payload["sessions"]
@@ -279,6 +303,17 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("too large")
         return json.loads(self.rfile.read(n))
 
+    def _public_url(self):
+        """Server URL as the browser reached it (through a reverse proxy too).
+        Only host-name characters are kept: it ends up in a script."""
+        if os.environ.get("PUBLIC_URL"):
+            return os.environ["PUBLIC_URL"].rstrip("/")
+        proto = self.headers.get("X-Forwarded-Proto", "http").split(",")[0].strip()
+        host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(",")[0].strip()
+        if proto not in ("http", "https") or not re.fullmatch(r"[A-Za-z0-9.\-]+(:\d+)?|\[[0-9A-Fa-f:.]+\](:\d+)?", host):
+            proto, host = "http", "localhost:" + os.environ.get("PORT", "8080")
+        return f"{proto}://{host}"
+
     def do_GET(self):
         if self.path == "/healthz":
             return self._send(200, '{"ok":true}')
@@ -298,6 +333,12 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/tags":
             self._send(200, json.dumps(load_tags(), indent=2, ensure_ascii=False),
                        headers=[("Content-Disposition", 'attachment; filename="tags.json"')])
+        elif self.path.startswith("/download/") and self.path[10:] in INSTALLERS:
+            # behind the dashboard login: the script carries the agent token
+            name = self.path[10:]
+            self._send(200, installer(name, self._public_url()), "application/octet-stream",
+                       headers=[("Content-Disposition", f'attachment; filename="{name}"'),
+                                ("Cache-Control", "no-store")])
         else:
             self._send(404, "{}")
 

@@ -1,0 +1,5 @@
+*
+!server/server.py
+!server/static
+!server/installers
+!agent/claude_usage_agent.py

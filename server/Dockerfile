@@ -1,9 +1,13 @@
+# Built from the repository root (context "."), so the agent can be bundled
+# into the downloadable installers.
 FROM python:3.13-slim
 
 ENV PYTHONUNBUFFERED=1 DATA_DIR=/data PORT=8080
 WORKDIR /app
-COPY server.py ./
-COPY static ./static
+COPY server/server.py ./
+COPY server/static ./static
+COPY server/installers ./installers
+COPY agent/claude_usage_agent.py ./agent/
 
 RUN useradd --uid 10001 --no-create-home app && mkdir -p /data && chown app /data
 USER app
